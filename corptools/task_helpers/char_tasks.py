@@ -1036,8 +1036,7 @@ def update_character_clones(character_id, force_refresh=False):
             store_cache=False
         )
 
-        all_locations = list(EveLocation.objects.all(
-        ).values_list('location_id', flat=True))
+        all_locations = set(EveLocation.objects.values_list('location_id', flat=True))
 
         home_loc = None  # Setting this to  none will force a lookup later on.
         try:
@@ -1213,7 +1212,7 @@ def update_character_orders(character_id, force_refresh=False):
 
         _st = time.perf_counter()
 
-        open_ids = list(
+        open_ids = set(
             CharacterMarketOrder.objects.filter(
                 character=audit_char,
                 state='active'
@@ -1302,7 +1301,7 @@ def update_character_order_history(character_id, force_refresh=False):
         )
         _st = time.perf_counter()
 
-        closed_ids = list(
+        closed_ids = set(
             CharacterMarketOrder.objects.filter(
                 character=audit_char
             ).values_list(
@@ -1646,7 +1645,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                         EveName.objects.get_or_create_from_esi(
                             getattr(msg, "from")
                         )
-                        _current_eve_ids.append(getattr(msg, "from"))
+                        _current_eve_ids.add(getattr(msg, "from"))
                     except Exception as e:
                         logger.error(
                             f"Error creating eve name for mail header: {e} {vars(msg)}")
