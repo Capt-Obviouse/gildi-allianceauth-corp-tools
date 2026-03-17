@@ -418,8 +418,8 @@ def update_character_assets(character_id, force_refresh=False):
             f"CT: New assets for: {audit_char.character.character_name}")
 
         _st = time.perf_counter()
-        location_names = list(
-            EveLocation.objects.all().values_list('location_id', flat=True))
+        location_names = set(
+            EveLocation.objects.values_list('location_id', flat=True))
 
         item_ids = []
         items = []
@@ -490,7 +490,8 @@ def update_character_assets(character_id, force_refresh=False):
 
 def chunks(qst, n):
     """Yield successive n-sized chunks from lst."""
-    for i in range(0, qst.count(), n):
+    total = qst.count()
+    for i in range(0, total, n):
         yield qst[i:i + n]
 
 
@@ -529,10 +530,13 @@ def update_character_assets_names(character_id):
 
         id_list = {i.item_id: i.name for i in assets_names}
 
+        updates = []
         for asset in subset:
             if asset.item_id in id_list:
                 asset.name = id_list.get(asset.item_id)
-                asset.save()
+                updates.append(asset)
+        if updates:
+            CharacterAsset.objects.bulk_update(updates, ['name'])
 
 
 def update_den_locations(character_id, force_refresh=False):
@@ -890,8 +894,8 @@ def update_character_wallet(character_id, force_refresh=False):
             character=audit_char
         ).values_list('entry_id', flat=True)
 
-        _current_eve_ids = list(
-            EveName.objects.all().values_list('eve_id', flat=True)
+        _current_eve_ids = set(
+            EveName.objects.values_list('eve_id', flat=True)
         )
 
         _new_names = []
@@ -901,10 +905,10 @@ def update_character_wallet(character_id, force_refresh=False):
             if item.id not in _current_journal:
                 if item.second_party_id not in _current_eve_ids:
                     _new_names.append(item.second_party_id)
-                    _current_eve_ids.append(item.second_party_id)
+                    _current_eve_ids.add(item.second_party_id)
                 if item.first_party_id not in _current_eve_ids:
                     _new_names.append(item.first_party_id)
-                    _current_eve_ids.append(item.first_party_id)
+                    _current_eve_ids.add(item.first_party_id)
 
                 items.append(
                     CharacterWalletJournalEntry.from_esi_model(
@@ -1215,8 +1219,8 @@ def update_character_orders(character_id, force_refresh=False):
                 state='active'
             ).values_list("order_id", flat=True)
         )
-        all_locations = list(
-            EveLocation.objects.all().values_list('location_id', flat=True)
+        all_locations = set(
+            EveLocation.objects.values_list('location_id', flat=True)
         )
 
         updates = []
@@ -1306,8 +1310,8 @@ def update_character_order_history(character_id, force_refresh=False):
                 flat=True
             )
         )
-        all_locations = list(
-            EveLocation.objects.all().values_list(
+        all_locations = set(
+            EveLocation.objects.values_list(
                 'location_id',
                 flat=True
             )
@@ -1542,11 +1546,11 @@ def update_character_mail_headers(character_id, force_refresh=False):
     if not token:
         return False
 
-    _current_eve_ids = list(
-        EveName.objects.all().values_list('eve_id', flat=True)
+    _current_eve_ids = set(
+        EveName.objects.values_list('eve_id', flat=True)
     )
-    _current_mail_rec = list(
-        MailRecipient.objects.all().values_list('recipient_id', flat=True)
+    _current_mail_rec = set(
+        MailRecipient.objects.values_list('recipient_id', flat=True)
     )
 
     # Mail Labels
@@ -1617,7 +1621,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                     names_to_create.add(recip.recipient_id)
         try:
             EveName.objects.create_bulk_from_esi(list(names_to_create))
-            _current_eve_ids += list(names_to_create)
+            _current_eve_ids.update(names_to_create)
         except Exception as e:
             logger.error(
                 f"Error Bulk creating eve names for mail headers: {e}")
@@ -1681,18 +1685,20 @@ def update_character_mail_headers(character_id, force_refresh=False):
         )
 
         LabelThroughModel = MailMessage.labels.through
+        _label_map = {
+            ml.label_id: ml.pk
+            for ml in MailLabel.objects.filter(character=audit_char)
+        }
         lms = []
         for _msg in msgs:
             if _msg.mail_id in m_l_map:
                 for label in m_l_map[_msg.mail_id]:
-                    lm = LabelThroughModel(
-                        mailmessage_id=_msg.id_key,
-                        maillabel_id=MailLabel.objects.get(
-                            character=audit_char,
-                            label_id=label
-                        ).pk
-                    )
-                    lms.append(lm)
+                    if label in _label_map:
+                        lm = LabelThroughModel(
+                            mailmessage_id=_msg.id_key,
+                            maillabel_id=_label_map[label]
+                        )
+                        lms.append(lm)
 
         LabelThroughModel.objects.bulk_create(lms, ignore_conflicts=True)
 
@@ -1705,7 +1711,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                     if r_type != "mailing_list":
                         if recip not in _current_eve_ids:
                             EveName.objects.get_or_create_from_esi(recip)
-                            _current_eve_ids.append(recip)
+                            _current_eve_ids.add(recip)
                         recip_name = recip
                     if recip not in _current_mail_rec or force_refresh:
                         MailRecipient.objects.update_or_create(
@@ -1716,7 +1722,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                             }
                         )
                         if not force_refresh:
-                            _current_mail_rec.append(recip)
+                            _current_mail_rec.add(recip)
 
                     rm = RecipThroughModel(
                         mailmessage_id=_msg.id_key, mailrecipient_id=recip)
@@ -1754,8 +1760,8 @@ def update_character_contacts(character_id, force_refresh=False):
     if not token:
         return False
 
-    _current_eve_ids = list(
-        EveName.objects.all().values_list('eve_id', flat=True)
+    _current_eve_ids = set(
+        EveName.objects.values_list('eve_id', flat=True)
     )
 
     try:
@@ -1801,13 +1807,16 @@ def update_character_contacts(character_id, force_refresh=False):
         ContactLabelThrough = CharacterContact.labels.through
         _contacts_to_create = []
         _through_to_create = []
-        for contact in contacts:  # update contacts
-            if contact.contact_id not in _current_eve_ids:
-                EveName.objects.get_or_create_from_esi(
-                    contact.contact_id
-                )
-                _current_eve_ids.append(contact.contact_id)
 
+        _missing_contact_ids = [
+            c.contact_id for c in contacts
+            if c.contact_id not in _current_eve_ids
+        ]
+        if _missing_contact_ids:
+            EveName.objects.create_bulk_from_esi(_missing_contact_ids)
+            _current_eve_ids.update(_missing_contact_ids)
+
+        for contact in contacts:  # update contacts
             _contact_item = CharacterContact.from_esi_model(
                 audit_char, contact)
 
