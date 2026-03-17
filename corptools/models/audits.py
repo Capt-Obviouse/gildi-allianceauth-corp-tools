@@ -183,7 +183,7 @@ class CharacterAudit(models.Model):
     character = models.OneToOneField(EveCharacter, on_delete=models.CASCADE)
 
     last_update_pub_data = models.DateTimeField(
-        null=True, default=None, blank=True)
+        null=True, default=None, blank=True, db_index=True)
 
     last_update_skills = models.DateTimeField(
         null=True, default=None, blank=True)

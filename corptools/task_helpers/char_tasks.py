@@ -375,14 +375,13 @@ def update_character_assets(character_id, force_refresh=False):
         )
 
         _st = time.perf_counter()
-        location_names = list(
-            EveLocation.objects.all().values_list('location_id', flat=True))
-        _current_type_ids = []
+        location_names = set(
+            EveLocation.objects.values_list('location_id', flat=True))
+        _current_type_ids = set()
         item_ids = []
         items = []
         for item in assets:
-            if item.get('type_id') not in _current_type_ids:
-                _current_type_ids.append(item.get('type_id'))
+            _current_type_ids.add(item.get('type_id'))
             item_ids.append(item.get('item_id'))
             asset_item = CharacterAsset(character=audit_char,
                                         blueprint_copy=item.get(
@@ -407,8 +406,7 @@ def update_character_assets(character_id, force_refresh=False):
         ship = get_current_ship_location(character_id)
         if ship:
             if ship.get('item_id') not in item_ids:
-                if ship.get('type_id') not in _current_type_ids:
-                    _current_type_ids.append(ship.get('type_id'))
+                _current_type_ids.add(ship.get('type_id'))
 
                 asset_item = CharacterAsset(character=audit_char,
                                             singleton=True,
@@ -427,7 +425,7 @@ def update_character_assets(character_id, force_refresh=False):
                     asset_item.location_name_id = ship.get('location_id')
                 items.append(asset_item)
 
-        EveItemType.objects.create_bulk_from_esi(_current_type_ids)
+        EveItemType.objects.create_bulk_from_esi(list(_current_type_ids))
 
         delete_query = CharacterAsset.objects.filter(
             character=audit_char)  # Flush Assets
@@ -466,7 +464,8 @@ def update_character_assets(character_id, force_refresh=False):
 
 def chunks(qst, n):
     """Yield successive n-sized chunks from lst."""
-    for i in range(0, qst.count(), n):
+    total = qst.count()
+    for i in range(0, total, n):
         yield qst[i:i + n]
 
 
@@ -491,6 +490,7 @@ def update_character_assets_names(character_id):
         singleton=True
     ).order_by("pk")
 
+    updated_assets = []
     for subset in chunks(asset_list, 100):
         assets_names = providers.esi.client.Assets.post_characters_character_id_assets_names(
             character_id=character_id,
@@ -503,7 +503,10 @@ def update_character_assets_names(character_id):
         for asset in subset:
             if asset.item_id in id_list:
                 asset.name = id_list.get(asset.item_id)
-                asset.save()
+                updated_assets.append(asset)
+
+    if updated_assets:
+        CharacterAsset.objects.bulk_update(updated_assets, ['name'], batch_size=500)
 
 
 def update_den_locations(character_id, force_refresh=False):
@@ -825,8 +828,8 @@ def update_character_wallet(character_id, force_refresh=False):
         _current_journal = CharacterWalletJournalEntry.objects.filter(
             # TODO add time filter
             character=audit_char).values_list('entry_id', flat=True)
-        _current_eve_ids = list(
-            EveName.objects.all().values_list('eve_id', flat=True))
+        _current_eve_ids = set(
+            EveName.objects.values_list('eve_id', flat=True))
 
         _new_names = []
 
@@ -835,10 +838,10 @@ def update_character_wallet(character_id, force_refresh=False):
             if item.get('id') not in _current_journal:
                 if item.get('second_party_id') not in _current_eve_ids:
                     _new_names.append(item.get('second_party_id'))
-                    _current_eve_ids.append(item.get('second_party_id'))
+                    _current_eve_ids.add(item.get('second_party_id'))
                 if item.get('first_party_id') not in _current_eve_ids:
                     _new_names.append(item.get('first_party_id'))
-                    _current_eve_ids.append(item.get('first_party_id'))
+                    _current_eve_ids.add(item.get('first_party_id'))
 
                 asset_item = CharacterWalletJournalEntry(character=audit_char,
                                                          amount=item.get(
@@ -971,8 +974,7 @@ def update_character_clones(character_id, force_refresh=False):
     active_clone = providers.esi.client.Clones.get_characters_character_id_implants(character_id=character_id,
                                                                                     token=token.valid_access_token()).result()
 
-    all_locations = list(EveLocation.objects.all(
-    ).values_list('location_id', flat=True))
+    all_locations = set(EveLocation.objects.values_list('location_id', flat=True))
     clones = {}
     clones[0] = active_clone
 
@@ -994,7 +996,7 @@ def update_character_clones(character_id, force_refresh=False):
 
     JumpClone.objects.filter(character=audit_char).delete()  # remove all
     implants = []
-    type_ids = []
+    type_ids = set()
 
     for clone in jump_clones.get('jump_clones'):
         _jumpclone = JumpClone(character=audit_char,
@@ -1008,8 +1010,7 @@ def update_character_clones(character_id, force_refresh=False):
         _jumpclone.save()
 
         for implant in clone.get('implants'):
-            if implant not in type_ids:
-                type_ids.append(implant)
+            type_ids.add(implant)
             implants.append(Implant(clone=_jumpclone,
                                     type_name_id=implant
                                     )
@@ -1020,14 +1021,13 @@ def update_character_clones(character_id, force_refresh=False):
                                           name="Active Clone")
 
     for implant in active_clone:
-        if implant not in type_ids:
-            type_ids.append(implant)
+        type_ids.add(implant)
         implants.append(Implant(clone=_jumpclone,
                                 type_name_id=implant,
                                 )
                         )
 
-    EveItemType.objects.create_bulk_from_esi(type_ids)
+    EveItemType.objects.create_bulk_from_esi(list(type_ids))
     Implant.objects.bulk_create(implants)
 
     audit_char.last_update_clones = timezone.now()
@@ -1115,22 +1115,20 @@ def update_character_orders(character_id, force_refresh=False):
             open_orders_op, token, force_refresh=force_refresh)
         _st = time.perf_counter()
 
-        open_ids = list(CharacterMarketOrder.objects.filter(
+        open_ids = set(CharacterMarketOrder.objects.filter(
             character=audit_char, state='active').values_list("order_id", flat=True))
-        all_locations = list(EveLocation.objects.all(
-        ).values_list('location_id', flat=True))
+        all_locations = set(EveLocation.objects.values_list('location_id', flat=True))
 
         updates = []
         creates = []
-        type_ids = []
+        type_ids = set()
 
         tracked_ids = []
 
         for order in open_orders:
             tracked_ids.append(order.get('order_id'))
 
-            if order.get('type_id') not in type_ids:
-                type_ids.append(order.get('type_id'))
+            type_ids.add(order.get('type_id'))
 
             _order = CharacterMarketOrder(
                 character=audit_char,
@@ -1161,7 +1159,7 @@ def update_character_orders(character_id, force_refresh=False):
             else:
                 creates.append(_order)
 
-        EveItemType.objects.create_bulk_from_esi(type_ids)
+        EveItemType.objects.create_bulk_from_esi(list(type_ids))
 
         if len(updates) > 0:
             CharacterMarketOrder.objects.bulk_update(updates, fields=['duration', 'escrow',
@@ -1210,22 +1208,20 @@ def update_character_order_history(character_id, force_refresh=False):
             order_history_op, token, force_refresh=force_refresh)
         _st = time.perf_counter()
 
-        closed_ids = list(CharacterMarketOrder.objects.filter(
+        closed_ids = set(CharacterMarketOrder.objects.filter(
             character=audit_char).values_list("order_id", flat=True))
-        all_locations = list(EveLocation.objects.all(
-        ).values_list('location_id', flat=True))
+        all_locations = set(EveLocation.objects.values_list('location_id', flat=True))
 
         updates = []
         creates = []
-        type_ids = []
+        type_ids = set()
 
         tracked_ids = []
 
         for order in order_history:
             tracked_ids.append(order.get('order_id'))
 
-            if order.get('type_id') not in type_ids:
-                type_ids.append(order.get('type_id'))
+            type_ids.add(order.get('type_id'))
 
             _order = CharacterMarketOrder(
                 character=audit_char,
@@ -1256,7 +1252,7 @@ def update_character_order_history(character_id, force_refresh=False):
             else:
                 creates.append(_order)
 
-        EveItemType.objects.create_bulk_from_esi(type_ids)
+        EveItemType.objects.create_bulk_from_esi(list(type_ids))
 
         if len(updates) > 0:
             CharacterMarketOrder.objects.bulk_update(updates, fields=['duration',
@@ -1441,10 +1437,10 @@ def update_character_mail_headers(character_id, force_refresh=False):
     if not token:
         return False
 
-    _current_eve_ids = list(
-        EveName.objects.all().values_list('eve_id', flat=True))
-    _current_mail_rec = list(
-        MailRecipient.objects.all().values_list('recipient_id', flat=True))
+    _current_eve_ids = set(
+        EveName.objects.values_list('eve_id', flat=True))
+    _current_mail_rec = set(
+        MailRecipient.objects.values_list('recipient_id', flat=True))
 
     # Mail Labels
     labels = providers.esi.client.Mail.get_characters_character_id_mail_labels(character_id=character_id,
@@ -1493,7 +1489,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                 if msg.get('from', 0) not in failed_ids:
                     try:
                         EveName.objects.get_or_create_from_esi(msg.get('from'))
-                        _current_eve_ids.append(msg.get('from', 0))
+                        _current_eve_ids.add(msg.get('from', 0))
                     except Exception:
                         failed_ids.add(msg.get('from'))
                         pass
@@ -1519,13 +1515,20 @@ def update_character_mail_headers(character_id, force_refresh=False):
             messages, batch_size=1000, ignore_conflicts=True)
 
         LabelThroughModel = MailMessage.labels.through
+        # Pre-fetch all mail labels for this character into a dict to avoid N+1 queries
+        _label_pk_map = {
+            ml.label_id: ml.pk
+            for ml in MailLabel.objects.filter(character=audit_char)
+        }
         lms = []
         for _msg in msgs:
             if _msg.mail_id in m_l_map:
                 for label in m_l_map[_msg.mail_id]:
-                    lm = LabelThroughModel(mailmessage_id=_msg.id_key,
-                                           maillabel_id=MailLabel.objects.get(character=audit_char, label_id=label).pk)
-                    lms.append(lm)
+                    label_pk = _label_pk_map.get(label)
+                    if label_pk is not None:
+                        lm = LabelThroughModel(mailmessage_id=_msg.id_key,
+                                               maillabel_id=label_pk)
+                        lms.append(lm)
 
         LabelThroughModel.objects.bulk_create(lms, ignore_conflicts=True)
 
@@ -1538,7 +1541,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                     if r_type != "mailing_list":
                         if recip not in _current_eve_ids:
                             EveName.objects.get_or_create_from_esi(recip)
-                            _current_eve_ids.append(recip)
+                            _current_eve_ids.add(recip)
                         recip_name = recip
                     if recip not in _current_mail_rec or force_refresh:
                         MailRecipient.objects.update_or_create(recipient_id=recip,
@@ -1546,7 +1549,7 @@ def update_character_mail_headers(character_id, force_refresh=False):
                                                                    "recipient_name_id": recip_name,
                                                                    "recipient_type": r_type})
                         if not force_refresh:
-                            _current_mail_rec.append(recip)
+                            _current_mail_rec.add(recip)
 
                     rm = RecipThroughModel(
                         mailmessage_id=_msg.id_key, mailrecipient_id=recip)
@@ -1582,8 +1585,8 @@ def update_character_contacts(character_id, force_refresh=False):
     if not token:
         return False
 
-    _current_eve_ids = list(
-        EveName.objects.all().values_list('eve_id', flat=True))
+    _current_eve_ids = set(
+        EveName.objects.values_list('eve_id', flat=True))
 
     try:
         labels_op = providers.esi.client.Contacts.get_characters_character_id_contacts_labels(
@@ -1622,13 +1625,19 @@ def update_character_contacts(character_id, force_refresh=False):
         _st = time.perf_counter()
 
         ContactLabelThrough = CharacterContact.labels.through
+
+        # Batch-fetch missing EveName entries instead of N+1 get_or_create_from_esi
+        _missing_eve_ids = []
+        for contact in contacts:
+            if contact.get('contact_id') not in _current_eve_ids:
+                _missing_eve_ids.append(contact.get('contact_id'))
+                _current_eve_ids.add(contact.get('contact_id'))
+        if _missing_eve_ids:
+            EveName.objects.create_bulk_from_esi(_missing_eve_ids)
+
         _contacts_to_create = []
         _through_to_create = []
         for contact in contacts:  # update contacts
-            if contact.get('contact_id') not in _current_eve_ids:
-                EveName.objects.get_or_create_from_esi(
-                    contact.get('contact_id'))
-                _current_eve_ids.append(contact.get('contact_id'))
             blocked = False if contact.get(
                 'is_blocked', False) is None else contact.get('is_blocked')
             watched = False if contact.get(
